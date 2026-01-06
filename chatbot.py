@@ -1,40 +1,64 @@
 import os
+from fastapi import FastAPI, Request, HTTPException
+from twilio.twiml.messaging_response import MessagingResponse
+from crewai import Agent, Task, Crew
 from langchain_groq import ChatGroq
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
+# Load environment variables
 load_dotenv()
 
 # Initialize Groq LLM
 llm = ChatGroq(
     model="llama-3.3-70b-versatile",
-    temperature=0.1,
+    temperature=0.7,
     api_key=os.getenv('GROQ_API_KEY')
 )
 
-def chat_with_groq():
-    print("Welcome to the Groq Chatbot! Type 'exit' to quit.")
-    messages = []
+# Create CrewAI Agent
+chat_agent = Agent(
+    role="Chatbot Assistant",
+    goal="Respond helpfully to user messages in a conversational manner.",
+    backstory="You are a friendly AI chatbot powered by Groq, ready to assist with any questions or conversations.",
+    llm=llm,
+    verbose=True
+)
 
-    while True:
-        user_input = input("You: ")
-        if user_input.lower() == 'exit':
-            print("Goodbye!")
-            break
+# Create FastAPI app
+app = FastAPI()
 
-        # Add user message to conversation
-        messages.append({"role": "user", "content": user_input})
+@app.post("/whatsapp")
+async def whatsapp_webhook(request: Request):
+    # Parse incoming message
+    form_data = await request.form()
+    incoming_msg = form_data.get('Body', '').strip()
+    from_number = form_data.get('From', '')
 
-        # Get response from Groq
-        try:
-            response = llm.invoke(messages)
-            bot_response = response.content
-            print(f"Bot: {bot_response}")
+    if not incoming_msg:
+        raise HTTPException(status_code=400, detail="No message body")
 
-            # Add bot response to conversation
-            messages.append({"role": "assistant", "content": bot_response})
-        except Exception as e:
-            print(f"Error: {e}")
+    # Create a task for the agent
+    chat_task = Task(
+        description=f"Respond to the user's message: {incoming_msg}",
+        agent=chat_agent,
+        expected_output="A helpful response to the user's message."
+    )
+
+    # Create crew and run
+    crew = Crew(
+        agents=[chat_agent],
+        tasks=[chat_task],
+        verbose=True
+    )
+
+    result = crew.kickoff()
+
+    # Prepare response
+    resp = MessagingResponse()
+    resp.message(str(result))
+
+    return str(resp)
 
 if __name__ == "__main__":
-    chat_with_groq()
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
